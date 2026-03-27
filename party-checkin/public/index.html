@@ -1,0 +1,124 @@
+// functions/api/checkin.js
+import { getGoogleAccessToken } from "./_google.js";
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      "content-type": "application/json",
+      "cache-control": "no-store",
+    },
+  });
+}
+
+function isoNow() {
+  return new Date().toISOString();
+}
+
+function sheetRef_(env) {
+  // Wrap in single quotes to support spaces/special chars in tab name
+  return `'${String(env.SHEET_NAME).replace(/'/g, "''")}'`;
+}
+
+function colLetter_(n) {
+  let s = "";
+  while (n > 0) {
+    let m = (n - 1) % 26;
+    s = String.fromCharCode(65 + m) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
+}
+
+export async function onRequestGet({ env, request }) {
+  const url = new URL(request.url);
+  const gid = (url.searchParams.get("gid") || "").trim();
+  if (!gid) return json({ ok: false, error: "Missing gid" }, 400);
+
+  const token = await getGoogleAccessToken(env);
+
+  // Read sheet
+  const range = encodeURIComponent(`${sheetRef_(env)}!A1:G1000`);
+  const r = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/${range}`,
+    { headers: { authorization: `Bearer ${token}` } }
+  );
+  if (!r.ok) return json({ ok: false, error: await r.text() }, 500);
+
+  const { values = [] } = await r.json();
+  if (values.length < 2) return json({ ok: false, error: "No data" }, 500);
+
+  const headers = values[0];
+  const idx = (name) => headers.indexOf(name);
+
+  const iGuestID = idx("GuestID");
+  const iName = idx("Name");
+  const iCheckedIn = idx("CheckedIn");
+  const iCheckInTime = idx("CheckInTime");
+
+  if ([iGuestID, iName, iCheckedIn, iCheckInTime].some((i) => i < 0)) {
+    return json({
+      ok: false,
+      error: "Missing required columns (GuestID, Name, CheckedIn, CheckInTime)",
+    }, 500);
+  }
+
+  // Find row by GuestID
+  let foundRow = -1; // 1-based row number in sheet
+  for (let row = 1; row < values.length; row++) {
+    if (String(values[row][iGuestID] || "").trim() === gid) {
+      foundRow = row + 1; // convert to 1-based sheet row
+      break;
+    }
+  }
+  if (foundRow === -1) {
+    return json({ ok: false, status: "NOT_FOUND", gid });
+  }
+
+  const rowArr = values[foundRow - 1];
+  const name = rowArr[iName] || "";
+  const already = String(rowArr[iCheckedIn] || "").toLowerCase() === "true";
+
+  if (already) {
+    return json({
+      ok: true,
+      status: "ALREADY_CHECKED_IN",
+      gid,
+      name,
+      checkInTime: rowArr[iCheckInTime] || "",
+    });
+  }
+
+  // Update CheckedIn + CheckInTime
+  const checkedInCol = iCheckedIn + 1;     // 1-based column number
+  const checkInTimeCol = iCheckInTime + 1; // 1-based column number
+  const now = isoNow();
+
+  const updateUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values:batchUpdate`;
+  const body = {
+    valueInputOption: "USER_ENTERED",
+    data: [
+      {
+        range: `${sheetRef_(env)}!${colLetter_(checkedInCol)}${foundRow}`,
+        values: [["TRUE"]],
+      },
+      {
+        range: `${sheetRef_(env)}!${colLetter_(checkInTimeCol)}${foundRow}`,
+        values: [[now]],
+      },
+    ],
+  };
+
+  const u = await fetch(updateUrl, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!u.ok) return json({ ok: false, error: await u.text() }, 500);
+
+  return json({ ok: true, status: "CHECKED_IN", gid, name, checkInTime: now });
+}

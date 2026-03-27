@@ -1,0 +1,66 @@
+// functions/api/search.js
+import { getGoogleAccessToken } from "./_google.js";
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      "content-type": "application/json",
+      "cache-control": "no-store",
+    },
+  });
+}
+
+function sheetRef_(env) {
+  // Wrap in single quotes to support spaces/special chars in tab name
+  return `'${String(env.SHEET_NAME).replace(/'/g, "''")}'`;
+}
+
+export async function onRequestGet({ env, request }) {
+  const url = new URL(request.url);
+  const q = (url.searchParams.get("q") || "").trim().toLowerCase();
+  if (!q) return json([]);
+
+  const token = await getGoogleAccessToken(env);
+
+  // Read the whole sheet (fine for ~200 guests)
+  const range = encodeURIComponent(`${sheetRef_(env)}!A1:G1000`);
+  const r = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/${range}`,
+    { headers: { authorization: `Bearer ${token}` } }
+  );
+
+  if (!r.ok) return json({ error: await r.text() }, 500);
+
+  const { values = [] } = await r.json();
+  if (values.length < 2) return json([]);
+
+  const headers = values[0];
+  const idx = (name) => headers.indexOf(name);
+
+  const iGuestID = idx("GuestID");
+  const iName = idx("Name");
+  const iEmail = idx("Email");
+  const iCheckedIn = idx("CheckedIn");
+  const iCheckInTime = idx("CheckInTime");
+
+  const out = [];
+  for (let row = 1; row < values.length; row++) {
+    const rr = values[row];
+    const name = rr[iName] || "";
+    const email = rr[iEmail] || "";
+    const hay = `${name} ${email}`.toLowerCase();
+
+    if (hay.includes(q)) {
+      out.push({
+        GuestID: rr[iGuestID] || "",
+        Name: name,
+        Email: email,
+        CheckedIn: String(rr[iCheckedIn] || "").toLowerCase() === "true",
+        CheckInTime: rr[iCheckInTime] || "",
+      });
+    }
+  }
+
+  return json(out.slice(0, 30));
+}

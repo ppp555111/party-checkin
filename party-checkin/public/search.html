@@ -1,0 +1,72 @@
+<!doctype html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Guest Search</title>
+</head>
+<body style="font-family:system-ui;max-width:520px;margin:0 auto;padding:16px">
+  <h2>Guest Search</h2>
+
+  <input id="q" placeholder="Type name or email"
+         style="width:100%;font-size:18px;padding:10px">
+  <button id="btn"
+          style="width:100%;font-size:18px;padding:10px;margin-top:10px">
+    Search
+  </button>
+
+  <div id="results" style="margin-top:12px"></div>
+
+<script>
+  const qEl = document.getElementById('q');
+  const resEl = document.getElementById('results');
+
+  document.getElementById('btn').onclick = search;
+  qEl.addEventListener('keydown', (e)=>{ if(e.key==='Enter') search(); });
+
+  async function search() {
+    const q = qEl.value.trim();
+    if (!q) return;
+
+    resEl.textContent = 'Searching...';
+    const r = await fetch('/api/search?q=' + encodeURIComponent(q), { cache: 'no-store' });
+    const rows = await r.json();
+
+    if (!rows.length) { resEl.textContent = 'No matches.'; return; }
+
+    resEl.innerHTML = rows.map(row => {
+      const status = row.CheckedIn
+        ? '<span style="color:#888">Checked in</span>'
+        : '<b>Not checked in</b>';
+
+      const btn = row.CheckedIn
+        ? ''
+        : `<button onclick="checkin('${escapeAttr(row.GuestID)}')">Check in</button>`;
+
+      return `<div style="padding:12px;border-bottom:1px solid #ddd">
+        <div style="font-size:18px">${escapeHtml(row.Name)}
+          <span style="color:#666">${escapeHtml(row.Email||'')}</span>
+        </div>
+        <div>${status}</div>
+        <div style="margin-top:8px">${btn}</div>
+      </div>`;
+    }).join('');
+  }
+
+  async function checkin(gid) {
+    const r = await fetch('/api/checkin?gid=' + encodeURIComponent(gid), { cache: 'no-store' });
+    const j = await r.json();
+    alert(j.status + (j.name ? (': ' + j.name) : ''));
+    search();
+  }
+
+  function escapeHtml(s){
+    return String(s||'').replace(/[&<>"']/g, m => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[m]));
+  }
+  function escapeAttr(s){
+    return String(s||'').replace(/'/g,"&#39;");
+  }
+</script>
+</body>
+</html>
